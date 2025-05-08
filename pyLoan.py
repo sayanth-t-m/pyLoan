@@ -1,10 +1,14 @@
 import sys
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QGridLayout, QLabel, QLineEdit,
-    QPushButton, QMessageBox, QGroupBox, QVBoxLayout
+    QPushButton, QMessageBox, QGroupBox, QVBoxLayout, QTabWidget,
+    QScrollArea
 )
 from PyQt5.QtGui import QFont, QDoubleValidator, QIntValidator
 from PyQt5.QtCore import Qt
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+import numpy as np
 
 def calculate_emi(principal, annual_rate, tenure_years):
     monthly_rate = annual_rate / 100 / 12
@@ -31,12 +35,20 @@ class EMICalculator(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("EMI Calculator")
-        self.setFixedSize(400, 450)
+        self.setMinimumSize(800, 600)  # Increased window size for graphs
         self.init_ui()
 
     def init_ui(self):
         font_label = QFont("Segoe UI", 10)
         font_input = QFont("Segoe UI", 10)
+
+        # Create main layout with tabs
+        main_layout = QVBoxLayout()
+        tab_widget = QTabWidget()
+
+        # Input Tab
+        input_widget = QWidget()
+        input_layout = QVBoxLayout()
 
         # Group: Loan Parameters
         grp_loan = QGroupBox("Loan Parameters")
@@ -83,13 +95,80 @@ class EMICalculator(QWidget):
         self.lbl_result.setFont(QFont("Segoe UI", 10))
         self.lbl_result.setAlignment(Qt.AlignTop)
 
-        # Main layout
-        vbox = QVBoxLayout()
-        vbox.addWidget(grp_loan)
-        vbox.addWidget(grp_lump)
-        vbox.addWidget(btn_calc, alignment=Qt.AlignCenter)
-        vbox.addWidget(self.lbl_result)
-        self.setLayout(vbox)
+        # Add widgets to input layout
+        input_layout.addWidget(grp_loan)
+        input_layout.addWidget(grp_lump)
+        input_layout.addWidget(btn_calc, alignment=Qt.AlignCenter)
+        input_layout.addWidget(self.lbl_result)
+        input_widget.setLayout(input_layout)
+
+        # Graphs Tab
+        graphs_widget = QWidget()
+        graphs_layout = QVBoxLayout()
+        self.figure = plt.figure(figsize=(8, 8))
+        self.canvas = FigureCanvas(self.figure)
+        graphs_layout.addWidget(self.canvas)
+        graphs_widget.setLayout(graphs_layout)
+
+        # Add tabs
+        tab_widget.addTab(input_widget, "Calculator")
+        tab_widget.addTab(graphs_widget, "Graphs")
+        
+        main_layout.addWidget(tab_widget)
+        self.setLayout(main_layout)
+
+    def plot_graphs(self, principal, rate, tenure, emi, total_pay, total_int, lump=0, year_n=0):
+        self.figure.clear()
+        
+        # Create subplot layout
+        gs = self.figure.add_gridspec(2, 2)
+        
+        # 1. Payment Breakdown Pie Chart
+        ax1 = self.figure.add_subplot(gs[0, 0])
+        labels = ['Principal', 'Interest']
+        sizes = [principal, total_int]
+        ax1.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90)
+        ax1.set_title('Payment Breakdown')
+
+        # 2. Monthly Payment Schedule
+        ax2 = self.figure.add_subplot(gs[0, 1])
+        months = np.arange(1, tenure * 12 + 1)
+        outstanding = []
+        monthly_rate = rate / 100 / 12
+        
+        for month in months:
+            out = calculate_outstanding_principal(principal, rate, tenure, month)
+            outstanding.append(out)
+        
+        ax2.plot(months, outstanding)
+        ax2.set_title('Outstanding Principal Over Time')
+        ax2.set_xlabel('Months')
+        ax2.set_ylabel('Outstanding Amount (₹)')
+        ax2.grid(True)
+
+        # 3. EMI Components Over Time
+        ax3 = self.figure.add_subplot(gs[1, :])
+        principal_component = []
+        interest_component = []
+        
+        for month in months:
+            outstanding_amount = calculate_outstanding_principal(principal, rate, tenure, month-1)
+            interest = outstanding_amount * monthly_rate
+            principal_part = emi - interest
+            principal_component.append(principal_part)
+            interest_component.append(interest)
+
+        ax3.stackplot(months, [principal_component, interest_component], 
+                     labels=['Principal', 'Interest'])
+        ax3.set_title('EMI Components Over Time')
+        ax3.set_xlabel('Months')
+        ax3.set_ylabel('Amount (₹)')
+        ax3.legend()
+        ax3.grid(True)
+
+        # Adjust layout and display
+        self.figure.tight_layout()
+        self.canvas.draw()
 
     def on_calculate(self):
         try:
@@ -112,11 +191,13 @@ class EMICalculator(QWidget):
         total_pay = emi * tenure * 12
         total_int = total_pay - principal
 
+        # Update text results
         text = []
         text.append(f"<b>Principal after downpayment:</b> ₹{principal:,.2f}")
         text.append(f"<b>Monthly EMI:</b> ₹{emi:,.2f}")
         text.append(f"<b>Total Payment:</b> ₹{total_pay:,.2f}")
         text.append(f"<b>Total Interest:</b> ₹{total_int:,.2f}")
+        text.append(f"<b>Interest to Principal Ratio:</b> {(total_int/principal):,.2%}")
 
         # If lump sum applies
         if lump > 0 and 1 <= year_n < tenure:
@@ -126,10 +207,17 @@ class EMICalculator(QWidget):
                 text.append(f"<br><b>After ₹{lump:,.2f} at year {year_n}:</b>")
                 text.append(f"Remaining months: {rem_months}")
                 text.append(f"Revised EMI: ₹{new_emi:,.2f}")
+                old_total = total_pay
+                new_total = (emi * year_n * 12) + (new_emi * rem_months) + lump
+                savings = old_total - new_total
+                text.append(f"Total savings: ₹{savings:,.2f}")
             else:
                 text.append("<br><b>Your lump-sum fully paid off the remaining loan!</b>")
 
         self.lbl_result.setText("<br>".join(text))
+        
+        # Update graphs
+        self.plot_graphs(principal, rate, tenure, emi, total_pay, total_int, lump, year_n)
 
 
 if __name__ == "__main__":
